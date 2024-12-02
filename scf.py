@@ -123,19 +123,10 @@ def run_dscf(molecule,g_full,g,max_iter=50,conv_thresh=1e-6,init_guess='sad'):
     error_DIIS = []
 
     # Density of external system 
-    if init_guess == 'hcore':
-        epsilon, C = scipy.linalg.eigh(h, S)
-        D0 = np.einsum("ik,jk->ij", C[:, :nocc], C[:, :nocc])
-    elif init_guess == 'sad':
-        D0 = scf.get_init_guess(molecule,'minao',s1e=S)
-    elif init_guess == 'atom':
-        D0 = scf.get_init_guess(molecule,'atom',s1e=S)
-    elif init_guess == 'huckel':
-        D0 = scf.get_init_guess(molecule,'huckel',s1e=S)
-    elif init_guess == 'mod_huckel':
-        D0 = scf.get_init_guess(molecule,'mod_huckel',s1e=S)
-    elif init_guess == 'sap':
-        D0 = scf.get_init_guess(molecule,'sap',s1e=S)
+    mf = molecule.HF()
+    mf.max_cycle = 0
+    mf.kernel()
+    D0 = np.einsum("ik,jk->ij", mf.mo_coeff[:, :nocc], mf.mo_coeff[:, :nocc])
 
     # External potential V0
     V0 = V + 2*contract('pqrs,rs->pq',g_full,D0) - contract('prqs,rs->pq',g_full,D0)
