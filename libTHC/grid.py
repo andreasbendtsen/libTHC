@@ -4,49 +4,73 @@ import scipy
 from pyscf import gto, dft
 # from grid.becke import BeckeWeights
 
-def read_grid(grid):
-     
-    with open(grid,'r') as f:
-        content = f.readlines()
 
-    ngrid = len(content)
-    coord = np.zeros((ngrid,3))
-    weights = np.zeros((ngrid))
+class Grid():
 
-    for i in range(ngrid):
-        line = content[i].strip().split()
-        coord[i,0] = float(line[0])
-        coord[i,1] = float(line[1])
-        coord[i,2] = float(line[2])
-        weights[i] = float(line[3])
+    def __init__(self):
+        super.__init__()
 
-    return coord, weights
+        # Set default grid type
+        self.type = 'read'
+        self.gridfile = None
+
+    def compute(self):
+
+        if self.type == 'read':
+            if self.gridfile == None:
+                print('Grid file not set, so nothing is returned')
+                return    
+
+            self.grid, self.weights = self.read_grid()
+        else:
+            print('Wrong grid type, so nothing is returned')
+            return    
+        
+        return self.grid, self.weights
+
+    def read_grid(self):
+        
+        with open(self.gridfile,'r') as f:
+            content = f.readlines()
+
+        ngrid = len(content)
+        coord = np.zeros((ngrid,3))
+        weights = np.zeros((ngrid))
+
+        for i in range(ngrid):
+            line = content[i].strip().split()
+            coord[i,0] = float(line[0])
+            coord[i,1] = float(line[1])
+            coord[i,2] = float(line[2])
+            weights[i] = float(line[3])
+
+        return coord, weights
 
 
-def get_IP_QR(molecule,coords,weights,epsilon):
+# def get_IP_QR(molecule,coords,weights,epsilon):
 
-    Rao = molecule.eval_gto('GTOval_sph', coords)
+#     Rao = molecule.eval_gto('GTOval_sph', coords)
 
-    rho = contract('xi,xj->xij',Rao,Rao)
-    rho = contract('xij,x->xij',rho,weights).reshape(np.shape(weights)[0],molecule.nao*molecule.nao)
+#     rho = contract('xi,xj->xij',Rao,Rao)
+#     rho = contract('xij,x->xij',rho,weights).reshape(np.shape(weights)[0],molecule.nao*molecule.nao)
 
-    Q, R, E = scipy.linalg.qr(rho.T, pivoting=True)
+#     Q, R, E = scipy.linalg.qr(rho.T, pivoting=True)
 
-    for i in range(molecule.nao**2-1):
-        if np.linalg.norm(R[i+1,i+1]) < epsilon:
-            Naux = i+1
-            break
+#     for i in range(molecule.nao**2-1):
+#         if np.linalg.norm(R[i+1,i+1]) < epsilon:
+#             Naux = i+1
+#             break
 
-    IP = np.zeros((Naux,3))
-    IP_weights = np.zeros((Naux,))
-    for i in range(Naux):
-        index = E[i]
-        IP[i,:] = coords[index,:]
-        IP_weights[i] = weights[index]
+#     IP = np.zeros((Naux,3))
+#     IP_weights = np.zeros((Naux,))
+#     for i in range(Naux):
+#         index = E[i]
+#         IP[i,:] = coords[index,:]
+#         IP_weights[i] = weights[index]
 
-    print(Naux)
+#     print(Naux)
 
-    return IP, IP_weights
+#     return IP, IP_weights
 
 
 # def get_IP_CVT_v2(molecule,cIP):
