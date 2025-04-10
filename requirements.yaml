@@ -1,0 +1,13 @@
+# install by running "conda env create -f requirements.yaml"
+
+name: lib_THC
+channels:
+  - pyscf
+  - conda-forge
+  - defaults
+dependencies:
+  - python
+  - pyscf
+  - opt_einsum
+  - matplotlib
+  - pytorch>=2.6.0

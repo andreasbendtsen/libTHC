@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "libTHC"
+version = "0.0.1"
+description = "A python module for tensor hypercontraction"
+readme = "README.md"
+
+authors = [
+    { name = "Andreas Erbs Hillers-Bendtsen", email = "aehb@stanford.edu"}
+]
+
+# dependencies
+#requires-python = "==3.11.*"
+dependencies = [
+    "torch>=2.6.0",
+    "matplotlib",
+    "pyscf",
+    "opt_einsum",
+]
