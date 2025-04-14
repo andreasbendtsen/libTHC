@@ -1,18 +1,22 @@
 import numpy as np
 from opt_einsum import contract
-import scipy
 from pyscf import gto, dft
+from scipy.optimize import nnls, lsq_linear
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LinearRegression
 # from grid.becke import BeckeWeights
-
 
 class Grid():
 
     def __init__(self):
-        super.__init__()
+        """Initialize Least Squares Grid driver."""
 
         # Set default grid type
         self.type = 'read'
         self.gridfile = None
+
+        # Set default reweighting
+        self.basis = 'cc-pvdz'
 
     def compute(self):
 
@@ -45,6 +49,64 @@ class Grid():
             weights[i] = float(line[3])
 
         return coord, weights
+    
+    def reweight_grid(self, xyz: str, type: str):
+
+        if type == 'overlap':
+
+            # Setup molecule
+            molecule = gto.Mole()
+            molecule.atom = xyz
+            molecule.basis = self.basis
+            molecule.build()
+
+            # Determine overlap mat and overlap on a grid
+            S = molecule.intor('int1e_ovlp')
+            R = molecule.eval_gto('GTOval_sph', self.grid)
+
+            S_grid = contract('xp,xq,x->pq',R,R,self.weights)
+
+            print('Standard S error primary basis: ',np.linalg.norm(S-S_grid))
+
+            nao = np.shape(R)[1]
+            ngrid = np.shape(R)[0]
+            R_concat = contract('xp,xq->xpq',R,R).reshape(ngrid,nao*nao)
+
+            A = R_concat.T
+            b = S.reshape(nao*nao)
+
+            # x, _ = nnls(A, b, 10000)
+
+            # result = lsq_linear(A, b, bounds=(0, np.inf), method='bvls')  # or 'bvls'
+            # x = result.x
+
+            scaler = StandardScaler()
+            A_scaled = scaler.fit_transform(A)
+            b_mean = b.mean()
+            b_scaled = b - b_mean
+
+            model = LinearRegression(positive=True)
+            model.fit(A_scaled, b_scaled)
+
+            # Get scaled coefficients
+            beta_scaled = model.coef_
+
+            # Unscale the coefficients
+            x = beta_scaled / scaler.scale_
+
+            S_grid_new_x = contract('xp,xq,x->pq',R,R,x)
+
+            print('Optimized S error primary basis: ',np.linalg.norm(S-S_grid_new_x)) 
+            print(f'Discarding {np.shape(x)[0]-np.shape(x[x>0])[0]} points of {np.shape(x)[0]} points \n')
+
+            self.grid = self.grid[x>0,:]
+            self.weights = x[x>0]
+
+        else:
+            print('Wrong reweighting type, so nothing is returned')
+            return
+
+        return self.grid, self.weights
 
 
 # def get_IP_QR(molecule,coords,weights,epsilon):

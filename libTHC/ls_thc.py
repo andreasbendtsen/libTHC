@@ -5,9 +5,8 @@ from pyscf import gto, df
 
 class LS_THC():
 
-    def __init__(self, xyz: np.ndarray, grid: np.ndarray, weights: np.ndarray):
+    def __init__(self, xyz: str, grid: np.ndarray, weights: np.ndarray):
         """Initialize Least Squares THC driver."""
-        super().__init__(xyz, grid)
 
         # set geometry and grid
         self.xyz = xyz
@@ -51,12 +50,21 @@ class LS_THC():
 
             self.Z = self.ls_thc_2center(ints_2c2e)
 
+        elif self.fit_type == '2c_chol':
+            self.setup_X(molecule)
+            self.setup_X_aux(molecule)
+            auxmol = df.addons.make_auxmol(molecule, self.auxbasis)
+            ints_2c2e = auxmol.intor('int2c2e')
+
+            L = np.linalg.cholesky(ints_2c2e)
+
+            self.Z = self.ls_thc_2center_chol(L)
+
         else:
             print('Wrong fit type, so nothing is returned')
             return
 
         return self.X, self.Z
-    
 
     def ls_thc_4center(self, ints):
     
@@ -85,13 +93,22 @@ class LS_THC():
         Z = contract('pa,ab,qb->pq',S_inv,E,S_inv)
 
         return Z
+    
+    def ls_thc_2center_chol(self, ints):
+        
+        S = contract('pb,qb->pq',self.Xaux,self.Xaux)
+        E = contract('ac,pa->pc',ints,self.Xaux)
+        xi = np.linalg.lstsq(S,E)[0]
+        Z = contract('pc,qc->pq',xi,xi)
+
+        return Z
 
     def setup_X(self, molecule):
 
         Rao = molecule.eval_gto('GTOval_sph', self.grid)
         Xao = np.zeros_like(Rao)
         for i in range(np.shape(Xao)[1]):
-            Xao[:,i] = np.sqrt(np.sqrt(self.weigths)) * Rao[:,i]
+            Xao[:,i] = np.sqrt(np.sqrt(self.weights)) * Rao[:,i]
 
         self.X = Xao
     
@@ -105,6 +122,6 @@ class LS_THC():
 
         Xaux = np.zeros_like(Raux)
         for i in range(np.shape(Xaux)[1]):
-            Xaux[:,i] = np.sqrt(self.weigths) * Raux[:,i]
+            Xaux[:,i] = np.sqrt(self.weights) * Raux[:,i]
 
         self.Xaux = Xaux
