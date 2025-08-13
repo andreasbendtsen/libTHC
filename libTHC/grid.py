@@ -1,26 +1,32 @@
 import numpy as np
 from opt_einsum import contract
 from pyscf import gto, dft
-from scipy.optimize import nnls, lsq_linear
-from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import LinearRegression
+from scipy.optimize import nnls as nnls_scipy
 # from grid.becke import BeckeWeights
 
 class Grid():
 
-    def __init__(self):
+    def __init__(self, xyz: str):
         """Initialize Least Squares Grid driver."""
 
         # Set default grid type
-        self.type = 'read'
+        self.type = 'generate'
+        self.xyz = xyz
         self.gridfile = None
+        self.level = 0
 
         # Set default reweighting
         self.basis = 'cc-pvdz'
+        self.wtol = 1.0e-6
+        self.Stol = 1.0e-8
 
     def compute(self):
+        
+        if self.type == 'generate':
 
-        if self.type == 'read':
+            self.grid, self.weights = self.generate_grid()
+
+        elif self.type == 'read':
             if self.gridfile == None:
                 print('Grid file not set, so nothing is returned')
                 return    
@@ -50,13 +56,34 @@ class Grid():
 
         return coord, weights
     
-    def reweight_grid(self, xyz: str, type: str):
+    def generate_grid(self):
+
+        # Setup molecule
+        molecule = gto.Mole()
+        molecule.atom = self.xyz
+        molecule.basis = self.basis
+        molecule.build()
+
+        # Setup dft driver
+        mf = dft.RKS(molecule)
+        mf.verbose = 0
+        mf.grids.level = self.level
+        mf.kernel()
+
+        coord = mf.grids.coords
+        weights = mf.grids.weights
+        coord = coord[weights>0,:]
+        weights = weights[weights>0]        
+
+        return coord, weights
+    
+    def reweight_grid(self, type: str, scheme: str, use_gpu: bool = True, resname = "nnls_checkpoint.npz"):
 
         if type == 'overlap':
 
             # Setup molecule
             molecule = gto.Mole()
-            molecule.atom = xyz
+            molecule.atom = self.xyz
             molecule.basis = self.basis
             molecule.build()
 
@@ -75,38 +102,204 @@ class Grid():
             A = R_concat.T
             b = S.reshape(nao*nao)
 
-            # x, _ = nnls(A, b, 10000)
-
-            # result = lsq_linear(A, b, bounds=(0, np.inf), method='bvls')  # or 'bvls'
-            # x = result.x
-
-            scaler = StandardScaler()
-            A_scaled = scaler.fit_transform(A)
-            b_mean = b.mean()
-            b_scaled = b - b_mean
-
-            model = LinearRegression(positive=True)
-            model.fit(A_scaled, b_scaled)
-
-            # Get scaled coefficients
-            beta_scaled = model.coef_
-
-            # Unscale the coefficients
-            x = beta_scaled / scaler.scale_
+            if scheme == 'nnls':
+                if use_gpu:
+                    x = nnls_fast_gpu(A,b,tol=self.wtol,Stol=self.Stol,checkpoint_file=resname)
+                else:
+                    x = nnls_fast(A,b,tol=self.wtol,Stol=self.Stol,checkpoint_file=resname)
+            elif scheme == 'nnls_scipy':
+                x, res = nnls_scipy(A,b,10*ngrid)
+            else:
+                print('Wrong reweighting scheme, so nothing is returned')
+                return
 
             S_grid_new_x = contract('xp,xq,x->pq',R,R,x)
 
             print('Optimized S error primary basis: ',np.linalg.norm(S-S_grid_new_x)) 
-            print(f'Discarding {np.shape(x)[0]-np.shape(x[x>0])[0]} points of {np.shape(x)[0]} points \n')
+            print(f'Discarding {np.shape(x)[0]-np.shape(x[x!=0])[0]} points of {np.shape(x)[0]} points \n')
 
-            self.grid = self.grid[x>0,:]
-            self.weights = x[x>0]
+            self.grid = self.grid[x!=0,:]
+            self.weights = x[x!=0]
 
         else:
             print('Wrong reweighting type, so nothing is returned')
             return
 
         return self.grid, self.weights
+    
+import numpy as np
+from scipy.linalg import cho_factor, cho_solve, lstsq
+import sys
+import os
+
+def save_checkpoint(x, passive, i, filename="nnls_checkpoint.npz"):
+    np.savez(filename,
+             x=x,
+             passive=passive,
+             i=np.array([i]))
+
+def load_checkpoint(filename="nnls_checkpoint.npz"):
+    data = np.load(filename)
+    x = np.asarray(data["x"])
+    passive = np.asarray(data["passive"])
+    i = int(data["i"][0])
+    return x, passive, i
+
+def nnls_fast(A, b, tol=1e-6, Stol=1e-8, max_iter=None, checkpoint_file="nnls_checkpoint.npz"):
+    A = np.asfortranarray(A)
+    b = np.asfortranarray(b)
+    m, n = A.shape
+
+    # Try to load checkpoint
+    print(checkpoint_file)
+    if os.path.exists(checkpoint_file):
+        print("Loading from checkpoint...")
+        x, passive, start_iter = load_checkpoint(checkpoint_file)
+        r = b - A @ x
+        w = A.T @ r
+    else:
+        x = np.zeros(n)
+        passive = np.zeros(n, dtype=bool)
+        r = b.copy()
+        w = A.T @ r
+        start_iter = 0
+
+    if max_iter is None:
+        max_iter = 5*n
+
+    for _ in range(start_iter,max_iter):
+        if _ % 1 == 0:
+            npas = np.sum((~passive & (w <= tol)) | passive)
+            ntot = np.shape(x)[0]
+            print(f'Iter: {_} of {max_iter} with {npas} out of {ntot} weights converged')
+            sys.stdout.flush()
+        # Save every 100 iterations
+        if _ % 10 == 0:
+            save_checkpoint(x, passive, _, checkpoint_file)
+        # Optimality check: w <= tol for all inactive
+        if np.all((~passive & (w <= tol)) | passive):
+            print('Converging as all weights are passive')
+            break
+
+        # Activate index with largest gradient violation
+        t = np.argmax(np.where(~passive, w, -np.inf))
+        passive[t] = True
+
+        while True:
+            P = np.flatnonzero(passive)
+            Ap = A[:, P]
+
+            # Solve LS via Cholesky
+            G = Ap.T @ Ap
+            c = Ap.T @ b
+            try:
+                c_factor = cho_factor(G)
+                z_p = cho_solve(c_factor, c)
+            except np.linalg.LinAlgError:
+                z_p, *_ = lstsq(Ap, b)
+
+            if np.all(z_p >= 0):
+                x[:] = 0
+                x[P] = z_p
+                break
+
+            z = np.zeros_like(x)
+            z[P] = z_p
+
+            # Step to boundary
+            mask = (z < 0) & passive
+            step = np.min(x[mask] / (x[mask] - z[mask] + 1e-12))
+            x += step * (z - x)
+            passive[x < tol] = False
+
+        r = b - A @ x
+        w = A.T @ r
+
+    return x
+
+import os
+import cupy as cp
+
+def save_checkpoint_gpu(x, passive, i, filename="nnls_checkpoint.npz"):
+    np.savez(filename,
+             x=cp.asnumpy(x),
+             passive=cp.asnumpy(passive),
+             i=np.array([i]))
+
+def load_checkpoint_gpu(filename="nnls_checkpoint.npz"):
+    data = np.load(filename)
+    x = cp.asarray(data["x"])
+    passive = cp.asarray(data["passive"])
+    i = int(data["i"][0])
+    return x, passive, i
+
+def nnls_fast_gpu(A, b, tol=1e-6, Stol=1e-8, max_iter=None, checkpoint_file="nnls_checkpoint.npz"):
+    A = cp.asarray(A)
+    b = cp.asfortranarray(cp.asarray(b))
+    m, n = A.shape
+    npas = 0
+
+    # Try to load checkpoint
+    if os.path.exists(checkpoint_file):
+        print("Loading from checkpoint...")
+        x, passive, start_iter = load_checkpoint_gpu(checkpoint_file)
+        r = b - A @ x
+        w = A.T @ r
+    else:
+        x = cp.zeros(n)
+        passive = cp.zeros(n, dtype=bool)
+        r = b.copy()
+        w = A.T @ r
+        start_iter = 0
+
+    if max_iter is None:
+        max_iter = 5*n
+
+    for _ in range(start_iter,max_iter):
+        if _ % 10 == 0:
+            npas = int(cp.sum((~passive & (w <= tol)) | passive).get())
+            ntot = x.shape[0]
+            print(f'Iter: {_} of {max_iter} with {npas} out of {ntot} weights converged')
+            sys.stdout.flush()
+
+        # Save every 100 iterations
+        if _ % 100 == 0:
+            save_checkpoint_gpu(x, passive, _, checkpoint_file)
+
+        if cp.all((~passive & (w <= tol)) | passive):
+            print('Converging as all weights are passive')
+            break
+
+        t = int(cp.argmax(cp.where(~passive, w, -cp.inf)))
+        passive[t] = True
+
+        while True:
+            P = cp.flatnonzero(passive)
+            Ap = cp.asfortranarray(A[:, P])
+            
+            try:
+                z_p = cp.linalg.lstsq(Ap, b, rcond=None)[0]
+            except Exception as e:
+                Q, R = cp.linalg.qr(Ap)
+                z_p = cp.linalg.solve(R, Q.T @ b)
+
+            if cp.all(z_p >= 0):
+                x[:] = 0
+                x[P] = z_p
+                break
+
+            z = cp.zeros_like(x)
+            z[P] = z_p
+
+            mask = (z < 0) & passive
+            step = cp.min(x[mask] / (x[mask] - z[mask] + 1e-12))
+            x += step * (z - x)
+            passive[x < tol] = False
+
+        r = b - A @ x
+        w = A.T @ r
+
+    return cp.asnumpy(x)
 
 
 # def get_IP_QR(molecule,coords,weights,epsilon):

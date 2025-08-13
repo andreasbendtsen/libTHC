@@ -10,4 +10,7 @@ dependencies:
   - pyscf
   - opt_einsum
   - matplotlib
-  - pytorch>=2.6.0
+  - scipy
+  - numpy
+  - cupy
+  - libblas=*=*mkl
