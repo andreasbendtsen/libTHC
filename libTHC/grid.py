@@ -121,6 +121,26 @@ class Grid():
             self.grid = self.grid[x!=0,:]
             self.weights = x[x!=0]
 
+        elif type == 'cholesky':
+
+            # Setup molecule
+            molecule = gto.Mole()
+            molecule.atom = self.xyz
+            molecule.basis = self.basis
+            molecule.build()
+
+            # Compute grid metric matrix S
+            X = np.sqrt(np.sqrt(self.weights))[:, np.newaxis] * molecule.eval_gto('GTOval_sph', self.grid)
+            S = contract('pa,pb,qa,qb->pq',X,X,X,X)
+
+            # Compute pivoted cholesky (dpstrf) of S
+            from scipy.linalg.lapack import get_lapack_funcs
+            dpstrf = get_lapack_funcs("pstrf", dtype=np.float64)
+            R, piv, rank, info = dpstrf(S, tol=self.wtol)
+            print(f'Discarding {np.shape(self.weights)[0]-rank} points of {np.shape(self.weights)[0]} points \n')
+            self.grid = self.grid[piv[:rank]-1,:]
+            self.weights = self.weights[piv[:rank]-1]
+
         else:
             print('Wrong reweighting type, so nothing is returned')
             return
@@ -256,7 +276,7 @@ def nnls_fast_gpu(A, b, tol=1e-6, Stol=1e-8, max_iter=None, checkpoint_file="nnl
         max_iter = 5*n
 
     for _ in range(start_iter,max_iter):
-        if _ % 10 == 0:
+        if _ % 100 == 0:
             npas = int(cp.sum((~passive & (w <= tol)) | passive).get())
             ntot = x.shape[0]
             print(f'Iter: {_} of {max_iter} with {npas} out of {ntot} weights converged')
