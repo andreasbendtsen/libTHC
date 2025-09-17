@@ -17,12 +17,15 @@ class LS_THC():
         self.fit_type = '4c'
         self.basis = 'cc-pvdz'
         self.auxbasis = 'cc-pvdz-ri'
+        self.cart_basis=False
 
     def compute(self):
 
         molecule = gto.Mole()
         molecule.atom = self.xyz
         molecule.basis = self.basis
+        if self.cart_basis:
+            molecule.cart = True
         molecule.build()
 
         if self.fit_type == '4c':
@@ -33,6 +36,8 @@ class LS_THC():
         elif self.fit_type == '3c':
             self.setup_X(molecule)
             auxmol = df.addons.make_auxmol(molecule, self.auxbasis)
+            if self.cart_basis:
+                auxmol.cart = True
             ints_2c2e = auxmol.intor('int2c2e')
             ints_3c2e = df.incore.aux_e2(molecule, auxmol, intor='int3c2e')                                                                                               
             df_coef = scipy.linalg.solve(scipy.linalg.sqrtm(ints_2c2e),
@@ -44,31 +49,28 @@ class LS_THC():
 
         elif self.fit_type == '2c':
             self.setup_X(molecule)
-            self.setup_X_aux(molecule)
             auxmol = df.addons.make_auxmol(molecule, self.auxbasis)
-            ints_2c2e = auxmol.intor('int2c2e')
-
-            self.Z = self.ls_thc_2center(ints_2c2e)
+            if self.cart_basis:
+                auxmol.cart = True
+            self.setup_X_aux(auxmol)
+            self.Z = self.ls_thc_2center(auxmol.intor('int2c2e'))
 
         elif self.fit_type == '2c_chol':
             self.setup_X(molecule)
-            self.setup_X_aux(molecule)
-            molecule.basis = self.auxbasis
-            molecule.build()
-            ints_2c2e = molecule.intor('int2c2e')
-
-            L = np.linalg.cholesky(ints_2c2e)
-            
+            auxmol = df.addons.make_auxmol(molecule, self.auxbasis)
+            if self.cart_basis:
+                auxmol.cart = True
+            self.setup_X_aux(auxmol)
+            L = np.linalg.cholesky(auxmol.intor('int2c2e'))
             self.Z = self.ls_thc_2center_chol(L)
 
         elif self.fit_type == '2c_sqrt':
             self.setup_X(molecule)
             auxmol = df.addons.make_auxmol(molecule, self.auxbasis)
+            if self.cart_basis:
+                auxmol.cart = True
             self.setup_X_aux(auxmol)
-            ints_2c2e = auxmol.intor('int2c2e')
-
-            L = scipy.linalg.sqrtm(ints_2c2e)
-
+            L = scipy.linalg.sqrtm(auxmol.intor('int2c2e'))
             self.Z = self.ls_thc_2center_chol(L)
 
         else:
@@ -104,7 +106,13 @@ class LS_THC():
         return Z
 
     def setup_X(self, molecule):
-        self.X = np.sqrt(np.sqrt(self.weights))[:, np.newaxis] * molecule.eval_gto('GTOval_sph', self.grid)
+        if self.cart_basis:
+            self.X = np.sqrt(np.sqrt(self.weights))[:, np.newaxis] * molecule.eval_gto('GTOval_cart', self.grid)
+        else:
+            self.X = np.sqrt(np.sqrt(self.weights))[:, np.newaxis] * molecule.eval_gto('GTOval_sph', self.grid)
     
     def setup_X_aux(self, auxmol):
-        self.Xaux = np.sqrt(self.weights)[:, np.newaxis] * auxmol.eval_gto('GTOval_sph', self.grid)
+        if self.cart_basis:
+            self.Xaux = np.sqrt(self.weights)[:, np.newaxis] * auxmol.eval_gto('GTOval_cart', self.grid)
+        else:
+            self.Xaux = np.sqrt(self.weights)[:, np.newaxis] * auxmol.eval_gto('GTOval_sph', self.grid)
