@@ -45,7 +45,8 @@ class LS_THC():
                                                              auxmol.nao).T)
             df_coef = df_coef.reshape(auxmol.nao, molecule.nao, molecule.nao)
 
-            self.Z = self.ls_thc_3center(df_coef)         
+            self.Y = self.ls_thc_3center(df_coef)
+            return self.X, self.Y
 
         elif self.fit_type == '2c':
             self.setup_X(molecule)
@@ -90,8 +91,8 @@ class LS_THC():
         S = contract('pa,pb,qa,qb->pq',self.X,self.X,self.X,self.X)
         E = contract('abc,pb,pc->pa',ints,self.X,self.X)
         xi, *_ = scipy.linalg.lstsq(S,E)
-        Z = contract('pa,qa->pq',xi,xi)
-        return Z
+        #Z = contract('pa,qa->pq',xi,xi)
+        return xi
 
     def ls_thc_2center(self, ints):
         S = contract('pb,qb->pq',self.Xaux,self.Xaux)
